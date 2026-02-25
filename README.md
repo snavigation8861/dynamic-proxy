@@ -104,6 +104,32 @@ The Docker image is built using multi-stage builds for minimal size:
   - 17286 (HTTP Relaxed - SSL verification disabled)
 - Config file can be mounted as a volume for easy updates
 
+#### Zeabur Free Container Deployment
+
+Zeabur Git Service only supports a single exposed container port.  
+When `PORT` exists, this project automatically switches to single-port mode.
+
+Runtime environment variables:
+- `PORT`: Single-port listen address (automatically injected by Zeabur)
+- `SINGLE_PORT_MODE`: Single-port service mode (default: `http_relaxed`)
+  - `http_relaxed`
+  - `http_strict`
+  - `socks5_relaxed`
+  - `socks5_strict`
+- `CONFIG_FILE`: Config file path (default: `config.yaml`)
+
+HTTP mode health endpoint:
+- `GET /health` or `GET /healthz`
+
+Quick steps:
+1. Push this repository to GitHub/GitLab.
+2. Create a new Zeabur service from the Git repository.
+3. Set environment variable `SINGLE_PORT_MODE=http_relaxed` (recommended for free container HTTP ingress).
+4. Deploy and check logs.
+5. Verify:
+   - `curl https://<your-zeabur-domain>/health`
+   - `curl -x http://<your-zeabur-domain> https://api.ipify.org`
+
 ### Configuration
 
 Edit `config.yaml` to customize settings:
@@ -148,6 +174,14 @@ ports:
 | `ports.socks5_relaxed` | SOCKS5 server port (SSL verification disabled) | :17284 |
 | `ports.http_strict` | HTTP proxy server port (SSL verification enabled) | :17285 |
 | `ports.http_relaxed` | HTTP proxy server port (SSL verification disabled) | :17286 |
+
+#### Runtime Environment Variables
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `PORT` | Single-port listen address (auto-injected on Zeabur) | empty (disabled) |
+| `SINGLE_PORT_MODE` | Single-port service mode | `http_relaxed` |
+| `CONFIG_FILE` | Config file path | `config.yaml` |
 
 ### Usage
 
@@ -452,6 +486,32 @@ Docker 镜像使用多阶段构建，体积最小化：
   - 17286 (HTTP 宽松模式 - 禁用SSL验证)
 - 配置文件可通过卷挂载，方便更新
 
+#### Zeabur 免费容器部署
+
+Zeabur Git Service 只支持单个容器端口暴露。  
+当检测到 `PORT` 环境变量时，本项目会自动切换为单端口模式。
+
+运行时环境变量：
+- `PORT`：单端口监听地址（Zeabur 自动注入）
+- `SINGLE_PORT_MODE`：单端口服务模式（默认：`http_relaxed`）
+  - `http_relaxed`
+  - `http_strict`
+  - `socks5_relaxed`
+  - `socks5_strict`
+- `CONFIG_FILE`：配置文件路径（默认：`config.yaml`）
+
+HTTP 模式健康检查端点：
+- `GET /health` 或 `GET /healthz`
+
+快速步骤：
+1. 将仓库推送到 GitHub/GitLab。
+2. 在 Zeabur 中从 Git 仓库创建服务。
+3. 设置环境变量 `SINGLE_PORT_MODE=http_relaxed`（免费容器 HTTP 入口推荐）。
+4. 部署并查看日志。
+5. 验证：
+   - `curl https://<你的-zeabur-域名>/health`
+   - `curl -x http://<你的-zeabur-域名> https://api.ipify.org`
+
 ### 配置说明
 
 编辑 `config.yaml` 自定义设置：
@@ -496,6 +556,14 @@ ports:
 | `ports.socks5_relaxed` | SOCKS5服务器端口（禁用SSL验证） | :17284 |
 | `ports.http_strict` | HTTP代理服务器端口（启用SSL验证） | :17285 |
 | `ports.http_relaxed` | HTTP代理服务器端口（禁用SSL验证） | :17286 |
+
+#### 运行时环境变量
+
+| 变量 | 说明 | 默认值 |
+|------|------|--------|
+| `PORT` | 单端口监听地址（Zeabur 自动注入） | 空（关闭单端口模式） |
+| `SINGLE_PORT_MODE` | 单端口服务模式 | `http_relaxed` |
+| `CONFIG_FILE` | 配置文件路径 | `config.yaml` |
 
 ### 使用方法
 

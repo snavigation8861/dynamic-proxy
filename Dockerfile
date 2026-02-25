@@ -29,8 +29,8 @@ COPY --from=builder /app/dynamic-proxy .
 # Copy config file
 COPY config.yaml .
 
-# Expose ports
-EXPOSE 17283 17284 17285 17286
+# Zeabur Git Service only supports a single exposed port.
+EXPOSE 8080
 
 # Run the application
 CMD ["./dynamic-proxy"]

@@ -23,21 +23,28 @@ import (
 
 // Config represents the application configuration
 type Config struct {
-	ProxyListURLs              []string `yaml:"proxy_list_urls"`
-	SpecialProxyListUrls       []string `yaml:"special_proxy_list_urls"` // 支持复杂格式的代理URL列表
-	HealthCheckConcurrency     int      `yaml:"health_check_concurrency"`
-	UpdateIntervalMinutes      int      `yaml:"update_interval_minutes"`
-	HealthCheck                struct {
-		TotalTimeoutSeconds           int `yaml:"total_timeout_seconds"`
-		TLSHandshakeThresholdSeconds  int `yaml:"tls_handshake_threshold_seconds"`
+	ProxyListURLs          []string `yaml:"proxy_list_urls"`
+	SpecialProxyListUrls   []string `yaml:"special_proxy_list_urls"` // 支持复杂格式的代理URL列表
+	HealthCheckConcurrency int      `yaml:"health_check_concurrency"`
+	UpdateIntervalMinutes  int      `yaml:"update_interval_minutes"`
+	HealthCheck            struct {
+		TotalTimeoutSeconds          int `yaml:"total_timeout_seconds"`
+		TLSHandshakeThresholdSeconds int `yaml:"tls_handshake_threshold_seconds"`
 	} `yaml:"health_check"`
 	Ports struct {
-		SOCKS5Strict   string `yaml:"socks5_strict"`
-		SOCKS5Relaxed  string `yaml:"socks5_relaxed"`
-		HTTPStrict     string `yaml:"http_strict"`
-		HTTPRelaxed    string `yaml:"http_relaxed"`
+		SOCKS5Strict  string `yaml:"socks5_strict"`
+		SOCKS5Relaxed string `yaml:"socks5_relaxed"`
+		HTTPStrict    string `yaml:"http_strict"`
+		HTTPRelaxed   string `yaml:"http_relaxed"`
 	} `yaml:"ports"`
 }
+
+const (
+	singlePortModeHTTPStrict    = "http_strict"
+	singlePortModeHTTPRelaxed   = "http_relaxed"
+	singlePortModeSOCKS5Strict  = "socks5_strict"
+	singlePortModeSOCKS5Relaxed = "socks5_relaxed"
+)
 
 // Global config variable
 var config Config
@@ -90,11 +97,35 @@ func loadConfig(filename string) (*Config, error) {
 	return &cfg, nil
 }
 
+func normalizeListenAddr(addr string) string {
+	addr = strings.TrimSpace(addr)
+	if addr == "" {
+		return ""
+	}
+	if strings.HasPrefix(addr, ":") {
+		return addr
+	}
+	return ":" + addr
+}
+
+func getSinglePortMode() string {
+	mode := strings.ToLower(strings.TrimSpace(os.Getenv("SINGLE_PORT_MODE")))
+	switch mode {
+	case "", singlePortModeHTTPRelaxed:
+		return singlePortModeHTTPRelaxed
+	case singlePortModeHTTPStrict, singlePortModeSOCKS5Strict, singlePortModeSOCKS5Relaxed:
+		return mode
+	default:
+		log.Printf("Warning: invalid SINGLE_PORT_MODE=%q, fallback to %s", mode, singlePortModeHTTPRelaxed)
+		return singlePortModeHTTPRelaxed
+	}
+}
+
 type ProxyPool struct {
-	proxies   []string
-	mu        sync.RWMutex
-	index     uint64
-	updating  int32 // atomic flag to prevent concurrent updates
+	proxies  []string
+	mu       sync.RWMutex
+	index    uint64
+	updating int32 // atomic flag to prevent concurrent updates
 }
 
 func NewProxyPool() *ProxyPool {
@@ -478,6 +509,9 @@ func startProxyUpdater(strictPool *ProxyPool, relaxedPool *ProxyPool, initialSyn
 		// Initial update synchronously to ensure we have proxies before starting servers
 		log.Println("Performing initial proxy update...")
 		updateProxyPool(strictPool, relaxedPool)
+	} else {
+		// In single-port/container platforms, start quickly and update in background immediately.
+		go updateProxyPool(strictPool, relaxedPool)
 	}
 
 	// Periodic updates - each update runs in its own goroutine to avoid blocking
@@ -723,6 +757,14 @@ func handleHTTPSProxy(w http.ResponseWriter, r *http.Request, dialer proxy.Diale
 
 func startHTTPServer(pool *ProxyPool, port string, mode string) error {
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && r.URL.Scheme == "" &&
+			(r.URL.Path == "/" || r.URL.Path == "/health" || r.URL.Path == "/healthz") {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprintf(w, `{"service":"dynamic-proxy","mode":"%s","proxies":%d}`, strings.ToLower(mode), len(pool.GetAll()))
+			return
+		}
+
 		handleHTTPProxy(w, r, pool, mode)
 	})
 
@@ -739,14 +781,22 @@ func main() {
 	log.Println("Starting Dynamic Proxy Server...")
 
 	// Load configuration
-	cfg, err := loadConfig("config.yaml")
+	configFile := strings.TrimSpace(os.Getenv("CONFIG_FILE"))
+	if configFile == "" {
+		configFile = "config.yaml"
+	}
+
+	cfg, err := loadConfig(configFile)
 	if err != nil {
 		log.Fatalf("Failed to load config: %v", err)
 	}
 	config = *cfg
 
+	singlePort := normalizeListenAddr(os.Getenv("PORT"))
+	singlePortMode := getSinglePortMode()
+
 	// Log configuration
-	log.Printf("Configuration loaded:")
+	log.Printf("Configuration loaded from %s:", configFile)
 	log.Printf("  - Proxy sources: %d", len(config.ProxyListURLs))
 	for i, url := range config.ProxyListURLs {
 		log.Printf("    [%d] %s", i+1, url)
@@ -760,13 +810,17 @@ func main() {
 	log.Printf("  - SOCKS5 Relaxed port: %s", config.Ports.SOCKS5Relaxed)
 	log.Printf("  - HTTP Strict port: %s", config.Ports.HTTPStrict)
 	log.Printf("  - HTTP Relaxed port: %s", config.Ports.HTTPRelaxed)
+	if singlePort != "" {
+		log.Printf("  - Single port mode enabled by PORT=%s", singlePort)
+		log.Printf("  - SINGLE_PORT_MODE=%s", singlePortMode)
+	}
 
 	// Create two proxy pools
 	strictPool := NewProxyPool()
 	relaxedPool := NewProxyPool()
 
-	// Start proxy updater with initial synchronous update
-	startProxyUpdater(strictPool, relaxedPool, true)
+	// Start proxy updater with initial sync for local/full mode, async for single-port mode.
+	startProxyUpdater(strictPool, relaxedPool, singlePort == "")
 
 	// Check proxy pool status
 	strictCount := len(strictPool.GetAll())
@@ -784,6 +838,33 @@ func main() {
 		log.Println("[RELAXED] Relaxed mode servers will return errors until proxies become available")
 	} else {
 		log.Printf("[RELAXED] Successfully loaded %d healthy proxies", relaxedCount)
+	}
+
+	if singlePort != "" {
+		log.Printf("Single-port server starting on %s", singlePort)
+		switch singlePortMode {
+		case singlePortModeHTTPStrict:
+			log.Printf("Single-port service: HTTP STRICT (health endpoint: /health)")
+			if err := startHTTPServer(strictPool, singlePort, "STRICT"); err != nil {
+				log.Fatalf("[STRICT] HTTP server error: %v", err)
+			}
+		case singlePortModeSOCKS5Strict:
+			log.Printf("Single-port service: SOCKS5 STRICT")
+			if err := startSOCKS5Server(strictPool, singlePort, "STRICT"); err != nil {
+				log.Fatalf("[STRICT] SOCKS5 server error: %v", err)
+			}
+		case singlePortModeSOCKS5Relaxed:
+			log.Printf("Single-port service: SOCKS5 RELAXED")
+			if err := startSOCKS5Server(relaxedPool, singlePort, "RELAXED"); err != nil {
+				log.Fatalf("[RELAXED] SOCKS5 server error: %v", err)
+			}
+		default:
+			log.Printf("Single-port service: HTTP RELAXED (health endpoint: /health)")
+			if err := startHTTPServer(relaxedPool, singlePort, "RELAXED"); err != nil {
+				log.Fatalf("[RELAXED] HTTP server error: %v", err)
+			}
+		}
+		return
 	}
 
 	// Start servers (4 servers total)
